@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoinDCX Futures Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px;min-height:100vh}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+.header h1{font-size:22px;font-weight:600;color:#fff}
+.header h1 span{color:#6366f1;font-weight:400}
+.header-right{display:flex;align-items:center;gap:16px;font-size:13px;color:#888}
+.refresh-btn{background:#1a1a2e;border:1px solid #2a2a3e;color:#aaa;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px}
+.refresh-btn:hover{background:#2a2a3e;color:#fff}
+.live-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px}
+.kpi{background:#12121e;border:1px solid #1e1e30;border-radius:10px;padding:16px}
+.kpi-label{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.kpi-value{font-size:22px;font-weight:600;color:#fff}
+.kpi-sub{font-size:11px;color:#666;margin-top:2px}
+.green{color:#22c55e}.red{color:#ef4444}.amber{color:#f59e0b}
+
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+.chart-card{background:#12121e;border:1px solid #1e1e30;border-radius:10px;padding:16px}
+.chart-card h3{font-size:13px;color:#888;font-weight:500;margin-bottom:12px}
+.chart-wrap{position:relative;height:250px}
+
+.section{background:#12121e;border:1px solid #1e1e30;border-radius:10px;padding:16px;margin-bottom:16px}
+.section h3{font-size:13px;color:#888;font-weight:500;margin-bottom:12px}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 6px;color:#555;font-weight:500;border-bottom:1px solid #1e1e30;position:sticky;top:0;background:#12121e}
+td{padding:7px 6px;border-bottom:1px solid #1a1a28}
+tr:hover{background:#1a1a28}
+.text-right{text-align:right}
+.text-center{text-align:center}
+.mono{font-family:'SF Mono',Monaco,monospace;font-size:11px}
+.badge-tp{background:#0a2e1a;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:500}
+.badge-sl{background:#2e0a0a;color:#ef4444;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:500}
+.badge-long{background:#0a1a2e;color:#3b82f6;padding:2px 8px;border-radius:4px;font-size:10px}
+.badge-short{background:#2e1a2e;color:#c084fc;padding:2px 8px;border-radius:4px;font-size:10px}
+
+.open-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.open-card{background:#1a1a28;border-radius:8px;padding:12px;border-left:3px solid #3b82f6}
+.open-card.short{border-left-color:#c084fc}
+.open-card .sym{font-weight:600;font-size:14px;color:#fff}
+.open-card .meta{font-size:11px;color:#666;margin-top:4px}
+
+.symbol-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.sym-card{background:#1a1a28;border-radius:8px;padding:12px}
+.sym-card .sym-name{font-weight:600;font-size:13px;color:#fff}
+.sym-card .sym-stats{font-size:11px;color:#888;margin-top:4px}
+.sym-card .sym-pnl{font-size:16px;font-weight:600;margin-top:6px}
+
+.daily-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #1a1a28}
+.daily-date{width:80px;font-size:12px;color:#888}
+.daily-bar-wrap{flex:1;height:20px;position:relative;display:flex;align-items:center}
+.daily-bar{height:14px;border-radius:3px;min-width:2px}
+.daily-stats{width:200px;font-size:11px;color:#888;text-align:right}
+
+.loading{display:flex;align-items:center;justify-content:center;height:60vh;font-size:16px;color:#555}
+.spinner{width:24px;height:24px;border:2px solid #333;border-top:2px solid #6366f1;border-radius:50%;animation:spin .8s linear infinite;margin-right:12px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.tab-bar{display:flex;gap:4px;margin-bottom:16px}
+.tab{padding:6px 16px;border-radius:6px;font-size:12px;color:#666;cursor:pointer;background:transparent;border:none}
+.tab.active{background:#1e1e30;color:#fff}
+
+@media(max-width:768px){
+  .charts{grid-template-columns:1fr}
+  .kpi-grid{grid-template-columns:repeat(3,1fr)}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="loading"><div class="spinner"></div>Loading trades from CoinDCX...</div>
+</div>
+
+<script>
+let allData = null;
+let refreshInterval = null;
+
+async function fetchData() {
+  try {
+    const r = await fetch('/api/data');
+    allData = await r.json();
+    render(allData);
+  } catch(e) {
+    document.getElementById('app').innerHTML = '<div class="loading" style="color:#ef4444">Failed to fetch data. Check API keys.</div>';
+  }
+}
+
+function fmt(v) { return v >= 0 ? '+₹' + v.toLocaleString('en-IN') : '-₹' + Math.abs(v).toLocaleString('en-IN'); }
+function fmtPct(v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + '%'; }
+function cls(v) { return v >= 0 ? 'green' : 'red'; }
+
+function render(data) {
+  const { trades, stats } = data;
+  const s = stats;
+  const maxDailyPnl = s.daily.length ? Math.max(...s.daily.map(d => Math.abs(d.pnl))) : 1;
+
+  document.getElementById('app').innerHTML = `
+    <div class="header">
+      <h1>CoinDCX Futures <span>Dashboard</span></h1>
+      <div class="header-right">
+        <span><span class="live-dot"></span> Auto-refresh 30s</span>
+        <span id="lastUpdate"></span>
+        <button class="refresh-btn" onclick="manualRefresh()">Refresh Now</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-label">Net P&L</div>
+        <div class="kpi-value ${cls(s.net_inr)}">${fmt(s.net_inr)}</div>
+        <div class="kpi-sub">${fmtPct(s.return_pct)} return</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Capital</div>
+        <div class="kpi-value">₹${s.end.toLocaleString('en-IN')}</div>
+        <div class="kpi-sub">from ₹${s.start.toLocaleString('en-IN')}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Win Rate</div>
+        <div class="kpi-value ${s.wr >= 50 ? 'green' : 'red'}">${s.wr}%</div>
+        <div class="kpi-sub">${s.wins}W / ${s.losses}L</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Trades</div>
+        <div class="kpi-value">${s.total}</div>
+        <div class="kpi-sub">${s.long_count}L / ${s.short_count}S${s.open_count ? ' + ' + s.open_count + ' open' : ''}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Avg Win</div>
+        <div class="kpi-value green">${fmt(s.avg_win)}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Avg Loss</div>
+        <div class="kpi-value red">${fmt(s.avg_loss)}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Peak / Trough</div>
+        <div class="kpi-value">₹${s.peak.toLocaleString('en-IN')}</div>
+        <div class="kpi-sub">Low: ₹${s.trough.toLocaleString('en-IN')}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Total Fees</div>
+        <div class="kpi-value red">₹${s.total_fees_inr.toLocaleString('en-IN')}</div>
+      </div>
+    </div>
+
+    <div class="charts">
+      <div class="chart-card">
+        <h3>Equity curve</h3>
+        <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <h3>Per-trade P&L</h3>
+        <div class="chart-wrap"><canvas id="pnlChart"></canvas></div>
+      </div>
+    </div>
+
+    ${s.open_count ? `
+    <div class="section">
+      <h3>Open positions (${s.open_count}) — unrealized: <span class="${cls(s.open_pnl)}">${fmt(s.open_pnl)}</span></h3>
+      <div class="open-grid">
+        ${s.open_positions.map(p => `
+          <div class="open-card ${p.side === 'SELL' ? 'short' : ''}">
+            <div class="sym">${p.symbol} <span class="${p.side === 'BUY' ? 'badge-long' : 'badge-short'}">${p.side}</span></div>
+            <div class="meta">Entry: ${p.entry} ${p.mark ? '→ Mark: ' + p.mark : ''}</div>
+            <div class="${cls(p.upnl_inr)}" style="font-weight:600;margin-top:4px">${fmt(p.upnl_inr)}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>` : ''}
+
+    ${s.daily.length > 1 ? `
+    <div class="section">
+      <h3>Daily breakdown</h3>
+      ${s.daily.map(d => {
+        const pct = Math.abs(d.pnl) / maxDailyPnl * 100;
+        const color = d.pnl >= 0 ? '#22c55e' : '#ef4444';
+        return `<div class="daily-row">
+          <div class="daily-date">${d.date.slice(5)}</div>
+          <div class="daily-bar-wrap">
+            <div class="daily-bar" style="width:${Math.max(pct, 2)}%;background:${color}"></div>
+          </div>
+          <div class="daily-stats">
+            <span class="${cls(d.pnl)}">${fmt(d.pnl)}</span>
+            &nbsp; ${d.trades}T &nbsp; ${d.wr}% WR &nbsp;
+            <span style="color:#555">Bal: ₹${d.cum.toLocaleString('en-IN')}</span>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>` : ''}
+
+    <div class="section">
+      <h3>Symbol breakdown (${s.symbols.length} symbols)</h3>
+      <div class="symbol-grid">
+        ${s.symbols.map(sym => `
+          <div class="sym-card">
+            <div class="sym-name">${sym.symbol}</div>
+            <div class="sym-stats">${sym.trades}T · ${sym.wins}W/${sym.trades - sym.wins}L · ${sym.wr}% WR</div>
+            <div class="sym-pnl ${cls(sym.pnl)}">${fmt(sym.pnl)}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Trade log (${trades.length} trades)</h3>
+      <div style="max-height:500px;overflow-y:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th>
+            <th class="text-right">Net P&L</th><th class="text-right">ROI</th>
+            <th class="text-right">Time</th><th class="text-center"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${trades.map((t, i) => `
+            <tr>
+              <td>${i + 1}</td>
+              <td style="font-weight:500;color:#fff">${t.symbol}</td>
+              <td><span class="${t.side === 'BUY' ? 'badge-long' : 'badge-short'}">${t.side}</span></td>
+              <td class="mono">${t.entry_price}</td>
+              <td class="mono">${t.exit_price}</td>
+              <td class="text-right ${cls(t.net_inr)}" style="font-weight:500">${fmt(t.net_inr)}</td>
+              <td class="text-right ${cls(t.roi)}">${fmtPct(t.roi)}</td>
+              <td class="text-right" style="color:#666">${t.exit_time}</td>
+              <td class="text-center"><span class="${t.status === 'TP' ? 'badge-tp' : 'badge-sl'}">${t.status}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString('en-IN');
+  drawCharts(s, trades);
+}
+
+function drawCharts(s, trades) {
+  const green = '#22c55e';
+  const red = '#ef4444';
+  const grid = 'rgba(255,255,255,0.04)';
+  const txt = 'rgba(255,255,255,0.35)';
+
+  new Chart(document.getElementById('equityChart'), {
+    type: 'line',
+    data: {
+      labels: s.equity.map((_, i) => i === 0 ? 'Start' : String(i)),
+      datasets: [{
+        data: s.equity,
+        borderColor: '#6366f1',
+        backgroundColor: 'rgba(99,102,241,0.08)',
+        borderWidth: 2, fill: true, tension: 0.3, pointRadius: 0, pointHitRadius: 8
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => '₹' + c.parsed.y.toLocaleString('en-IN') } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: txt, font: { size: 10 }, maxTicksLimit: 10 } },
+        y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v.toLocaleString('en-IN') } }
+      }
+    }
+  });
+
+  new Chart(document.getElementById('pnlChart'), {
+    type: 'bar',
+    data: {
+      labels: trades.map((_, i) => String(i + 1)),
+      datasets: [{
+        data: trades.map(t => Math.round(t.net_inr)),
+        backgroundColor: trades.map(t => t.net_inr >= 0 ? green : red),
+        borderRadius: 2, barPercentage: 0.85
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: {
+          label: c => trades[c.dataIndex].symbol + ': ₹' + c.parsed.y,
+          title: c => '#' + c[0].label + ' · ' + trades[c[0].dataIndex].exit_time
+        }}
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: txt, font: { size: 10 }, maxTicksLimit: 12 } },
+        y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v } }
+      }
+    }
+  });
+}
+
+async function manualRefresh() {
+  await fetch('/api/refresh');
+  await fetchData();
+}
+
+fetchData();
+refreshInterval = setInterval(fetchData, 30000);
+</script>
+</body>
+</html>
