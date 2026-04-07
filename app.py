@@ -12,6 +12,7 @@ ENDPOINT = "/exchange/v1/derivatives/futures/trades"
 USDT_INR = float(os.environ.get("USDT_INR_RATE", "98"))
 STARTING_CAPITAL = float(os.environ.get("STARTING_CAPITAL_INR", "4490"))
 START_DATE = os.environ.get("START_DATE", "2026-04-07")
+BOT_URL = os.environ.get("BOT_URL", "https://web-production-14d7b.up.railway.app")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Cache to avoid hammering API on every page load
@@ -155,11 +156,27 @@ def fetch_current_prices():
     return {}
 
 
+def fetch_bot_positions():
+    """Fetch real open positions from the trading bot's /status endpoint."""
+    try:
+        resp = requests.get(f"{BOT_URL}/status", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("active_trades", {})
+    except:
+        pass
+    return {}
+
+
 def build_stats(completed, open_orders):
     if not completed:
+        bot_pos = fetch_bot_positions()
         return {"total": 0, "wins": 0, "losses": 0, "wr": 0, "net_inr": 0,
                 "start": STARTING_CAPITAL, "end": STARTING_CAPITAL, "peak": STARTING_CAPITAL,
-                "trough": STARTING_CAPITAL, "open_count": len(open_orders)}
+                "trough": STARTING_CAPITAL, "open_count": len(bot_pos), "open_positions": [],
+                "open_pnl": 0, "equity": [STARTING_CAPITAL], "daily": [], "symbols": [],
+                "total_fees_inr": 0, "return_pct": 0, "avg_win": 0, "avg_loss": 0,
+                "long_count": 0, "short_count": 0, "long_wr": 0, "short_wr": 0}
 
     wins = [t for t in completed if t["net_inr"] > 0]
     losses = [t for t in completed if t["net_inr"] <= 0]
@@ -208,42 +225,6 @@ def build_stats(completed, open_orders):
         key=lambda x: x["pnl"], reverse=True
     )
 
-    # Open positions with current price
-    prices = fetch_current_prices() if open_orders else {}
-    open_list = []
-    open_pnl = 0.0
-    for pair, o in open_orders.items():
-        sym = pair.replace("B-", "").replace("_USDT", "")
-        # Try multiple lookup strategies
-        mark = prices.get(pair, 0)
-        if not mark:
-            # Try without 1000 prefix: B-1000BONK_USDT → B-BONK_USDT
-            alt = pair.replace("1000", "")
-            mark = prices.get(alt, 0)
-        if not mark:
-            # Try lowercase
-            mark = prices.get(pair.lower(), 0)
-        if not mark:
-            # Brute force: search for symbol name in keys
-            search = sym.replace("1000", "").upper()
-            for k, v in prices.items():
-                if k.startswith("B-") and search + "_USDT" in k.upper():
-                    mark = v
-                    break
-        entry = o["avg_price"]
-        qty = o["qty"]
-        if mark > 0:
-            upnl = ((mark - entry) * qty if o["side"] == "buy" else (entry - mark) * qty)
-            upnl_inr = (upnl - o["fee_usdt"]) * USDT_INR
-        else:
-            upnl_inr = 0
-        open_pnl += upnl_inr
-        open_list.append({
-            "symbol": sym, "side": o["side"].upper(),
-            "entry": round(entry, 8), "mark": round(mark, 8) if mark else 0,
-            "upnl_inr": round(upnl_inr, 2), "pair": pair,
-        })
-
     longs = [t for t in completed if t["side"] == "BUY"]
     shorts = [t for t in completed if t["side"] == "SELL"]
     long_wins = [t for t in longs if t["net_inr"] > 0]
@@ -272,9 +253,6 @@ def build_stats(completed, open_orders):
         "equity": equity,
         "daily": daily_list,
         "symbols": symbol_list,
-        "open_positions": open_list,
-        "open_count": len(open_orders),
-        "open_pnl": round(open_pnl, 2),
         "total_fees_inr": round(sum(t["fees_usdt"] for t in completed) * USDT_INR, 2),
     }
 

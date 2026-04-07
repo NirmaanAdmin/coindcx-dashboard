@@ -133,7 +133,7 @@ function render(data) {
       <div class="kpi">
         <div class="kpi-label">Trades</div>
         <div class="kpi-value">${s.total}</div>
-        <div class="kpi-sub">${s.long_count}L / ${s.short_count}S${s.open_count ? ' + ' + s.open_count + ' open' : ''}</div>
+        <div class="kpi-sub">${s.long_count}L / ${s.short_count}S</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Avg Win</div>
@@ -164,20 +164,6 @@ function render(data) {
         <div class="chart-wrap"><canvas id="pnlChart"></canvas></div>
       </div>
     </div>
-
-    ${s.open_count ? `
-    <div class="section">
-      <h3>Open positions (${s.open_count}) — unrealized: <span class="${cls(s.open_pnl)}">${fmt(s.open_pnl)}</span></h3>
-      <div class="open-grid">
-        ${s.open_positions.map(p => `
-          <div class="open-card ${p.side === 'SELL' ? 'short' : ''}">
-            <div class="sym">${p.symbol} <span class="${p.side === 'BUY' ? 'badge-long' : 'badge-short'}">${p.side}</span></div>
-            <div class="meta">Entry: ${p.entry} ${p.mark ? '→ Mark: ' + p.mark : ''}</div>
-            <div class="${cls(p.upnl_inr)}" style="font-weight:600;margin-top:4px">${fmt(p.upnl_inr)}</div>
-          </div>
-        `).join('')}
-      </div>
-    </div>` : ''}
 
     ${s.daily.length > 1 ? `
     <div class="section">
