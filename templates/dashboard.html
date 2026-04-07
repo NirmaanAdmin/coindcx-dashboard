@@ -118,7 +118,12 @@ function render(data) {
       <div class="kpi">
         <div class="kpi-label">Net P&L</div>
         <div class="kpi-value ${cls(s.net_inr)}">${fmt(s.net_inr)}</div>
-        <div class="kpi-sub">${fmtPct(s.return_pct)} ROI</div>
+        <div class="kpi-sub">${fmtPct(s.return_pct)} on capital</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Sum ROI</div>
+        <div class="kpi-value ${cls(s.sum_roi)}">${fmtPct(s.sum_roi)}</div>
+        <div class="kpi-sub"><span class="green">+${s.sum_tp_roi.toFixed(1)}%</span> / <span class="red">${s.sum_sl_roi.toFixed(1)}%</span></div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Capital (closed)</div>
@@ -136,12 +141,9 @@ function render(data) {
         <div class="kpi-sub">${s.long_count}L / ${s.short_count}S</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">Avg Win</div>
+        <div class="kpi-label">Avg Win / Loss</div>
         <div class="kpi-value green">${fmt(s.avg_win)}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Avg Loss</div>
-        <div class="kpi-value red">${fmt(s.avg_loss)}</div>
+        <div class="kpi-sub red">${fmt(s.avg_loss)}</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Peak / Trough</div>
@@ -185,9 +187,29 @@ function render(data) {
       }).join('')}
     </div>` : ''}
 
-    <div class="chart-card" style="margin-bottom:16px">
-      <h3>P&L by symbol</h3>
-      <div style="position:relative;height:${Math.max(s.symbols.length * 32 + 40, 200)}px"><canvas id="symbolChart"></canvas></div>
+    <div class="charts">
+      <div class="chart-card">
+        <h3>P&L by symbol</h3>
+        <div style="position:relative;height:${Math.max(s.symbols.length * 28 + 40, 200)}px"><canvas id="symbolChart"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <h3>Long vs Short</h3>
+        <div style="position:relative;height:250px"><canvas id="sideChart"></canvas></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px">
+          <div style="background:#1a1a28;border-radius:8px;padding:12px;border-left:3px solid #3b82f6">
+            <div style="font-size:11px;color:#888">Long</div>
+            <div style="font-size:18px;font-weight:600;color:#fff;margin:4px 0">${s.long_count} trades</div>
+            <div style="font-size:13px;color:${s.long_wr >= 50 ? '#22c55e' : '#ef4444'}">${s.long_wr}% WR</div>
+            <div style="font-size:13px" class="${cls(s.long_pnl)}">${fmt(s.long_pnl)}</div>
+          </div>
+          <div style="background:#1a1a28;border-radius:8px;padding:12px;border-left:3px solid #c084fc">
+            <div style="font-size:11px;color:#888">Short</div>
+            <div style="font-size:18px;font-weight:600;color:#fff;margin:4px 0">${s.short_count} trades</div>
+            <div style="font-size:13px;color:${s.short_wr >= 50 ? '#22c55e' : '#ef4444'}">${s.short_wr}% WR</div>
+            <div style="font-size:13px" class="${cls(s.short_pnl)}">${fmt(s.short_pnl)}</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="section">
@@ -301,6 +323,30 @@ function drawCharts(s, trades) {
       scales: {
         x: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v } },
         y: { grid: { display: false }, ticks: { color: '#ccc', font: { size: 11 } } }
+      }
+    }
+  });
+
+  new Chart(document.getElementById('sideChart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Long TP', 'Long SL', 'Short TP', 'Short SL'],
+      datasets: [{
+        data: [
+          trades.filter(t => t.side === 'BUY' && t.net_inr > 0).length,
+          trades.filter(t => t.side === 'BUY' && t.net_inr <= 0).length,
+          trades.filter(t => t.side === 'SELL' && t.net_inr > 0).length,
+          trades.filter(t => t.side === 'SELL' && t.net_inr <= 0).length,
+        ],
+        backgroundColor: ['#22c55e', '#ef4444', '#818cf8', '#f97316'],
+        borderWidth: 0, spacing: 2
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '55%',
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { color: '#aaa', font: { size: 11 }, padding: 12, usePointStyle: true, pointStyleWidth: 8 } },
+        tooltip: { callbacks: { label: c => c.label + ': ' + c.parsed + ' trades' } }
       }
     }
   });

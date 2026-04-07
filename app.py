@@ -232,6 +232,11 @@ def build_stats(completed, open_orders):
 
     avg_win = sum(t["net_inr"] for t in wins) / len(wins) if wins else 0
     avg_loss = sum(t["net_inr"] for t in losses) / len(losses) if losses else 0
+    long_pnl = sum(t["net_inr"] for t in longs)
+    short_pnl = sum(t["net_inr"] for t in shorts)
+    sum_tp_roi = sum(t["roi"] for t in completed if t["roi"] > 0)
+    sum_sl_roi = sum(t["roi"] for t in completed if t["roi"] <= 0)
+    sum_roi = sum(t["roi"] for t in completed)
 
     return {
         "total": len(completed),
@@ -242,9 +247,14 @@ def build_stats(completed, open_orders):
         "short_count": len(shorts),
         "long_wr": round(len(long_wins) / len(longs) * 100, 1) if longs else 0,
         "short_wr": round(len(short_wins) / len(shorts) * 100, 1) if shorts else 0,
+        "long_pnl": round(long_pnl, 2),
+        "short_pnl": round(short_pnl, 2),
         "net_inr": round(total_net, 2),
         "avg_win": round(avg_win, 2),
         "avg_loss": round(avg_loss, 2),
+        "sum_roi": round(sum_roi, 2),
+        "sum_tp_roi": round(sum_tp_roi, 2),
+        "sum_sl_roi": round(sum_sl_roi, 2),
         "start": STARTING_CAPITAL,
         "end": round(STARTING_CAPITAL + total_net, 2),
         "peak": max(equity),
