@@ -118,10 +118,10 @@ function render(data) {
       <div class="kpi">
         <div class="kpi-label">Net P&L</div>
         <div class="kpi-value ${cls(s.net_inr)}">${fmt(s.net_inr)}</div>
-        <div class="kpi-sub">${fmtPct(s.return_pct)} return</div>
+        <div class="kpi-sub">${fmtPct(s.return_pct)} ROI</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">Capital</div>
+        <div class="kpi-label">Capital (closed)</div>
         <div class="kpi-value">₹${s.end.toLocaleString('en-IN')}</div>
         <div class="kpi-sub">from ₹${s.start.toLocaleString('en-IN')}</div>
       </div>
@@ -185,17 +185,9 @@ function render(data) {
       }).join('')}
     </div>` : ''}
 
-    <div class="section">
-      <h3>Symbol breakdown (${s.symbols.length} symbols)</h3>
-      <div class="symbol-grid">
-        ${s.symbols.map(sym => `
-          <div class="sym-card">
-            <div class="sym-name">${sym.symbol}</div>
-            <div class="sym-stats">${sym.trades}T · ${sym.wins}W/${sym.trades - sym.wins}L · ${sym.wr}% WR</div>
-            <div class="sym-pnl ${cls(sym.pnl)}">${fmt(sym.pnl)}</div>
-          </div>
-        `).join('')}
-      </div>
+    <div class="chart-card" style="margin-bottom:16px">
+      <h3>P&L by symbol</h3>
+      <div style="position:relative;height:${Math.max(s.symbols.length * 32 + 40, 200)}px"><canvas id="symbolChart"></canvas></div>
     </div>
 
     <div class="section">
@@ -283,6 +275,32 @@ function drawCharts(s, trades) {
       scales: {
         x: { grid: { display: false }, ticks: { color: txt, font: { size: 10 }, maxTicksLimit: 12 } },
         y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v } }
+      }
+    }
+  });
+
+  const symSorted = [...s.symbols].sort((a, b) => b.pnl - a.pnl);
+  new Chart(document.getElementById('symbolChart'), {
+    type: 'bar',
+    data: {
+      labels: symSorted.map(sym => sym.symbol + ' (' + sym.trades + 'T)'),
+      datasets: [{
+        data: symSorted.map(sym => Math.round(sym.pnl)),
+        backgroundColor: symSorted.map(sym => sym.pnl >= 0 ? green : red),
+        borderRadius: 3, barPercentage: 0.7
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: {
+          label: c => '₹' + c.parsed.x + ' · ' + symSorted[c.dataIndex].wins + 'W/' + (symSorted[c.dataIndex].trades - symSorted[c.dataIndex].wins) + 'L · ' + symSorted[c.dataIndex].wr + '% WR'
+        }}
+      },
+      scales: {
+        x: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v } },
+        y: { grid: { display: false }, ticks: { color: '#ccc', font: { size: 11 } } }
       }
     }
   });
