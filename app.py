@@ -136,7 +136,20 @@ def fetch_current_prices():
         resp = requests.get(f"{BASE_URL}/exchange/ticker", timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            return {item["market"]: float(item["last_price"]) for item in data if item.get("last_price")}
+            prices = {}
+            for item in data:
+                lp = item.get("last_price")
+                if not lp:
+                    continue
+                market = item.get("market", "")
+                prices[market] = float(lp)
+                # Also index by common variations
+                prices[market.upper()] = float(lp)
+                # If market is like "TRUMPUSDT", also store as "B-TRUMP_USDT"
+                if "USDT" in market.upper() and not market.startswith("B-"):
+                    sym = market.upper().replace("USDT", "")
+                    prices[f"B-{sym}_USDT"] = float(lp)
+            return prices
     except:
         pass
     return {}
@@ -268,6 +281,14 @@ def api_data():
 def api_refresh():
     _cache["last_fetch"] = 0
     return jsonify({"status": "cache cleared"})
+
+
+@app.route("/api/debug-prices")
+def debug_prices():
+    prices = fetch_current_prices()
+    # Show keys that contain OP, TRUMP, BONK
+    samples = {k: v for k, v in prices.items() if any(x in k.upper() for x in ["TRUMP", "BONK", "OP_", "MOODENG"])}
+    return jsonify({"total_keys": len(prices), "samples": samples, "first_20": dict(list(prices.items())[:20])})
 
 
 if __name__ == "__main__":
