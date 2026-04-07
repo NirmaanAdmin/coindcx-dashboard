@@ -214,7 +214,22 @@ def build_stats(completed, open_orders):
     open_pnl = 0.0
     for pair, o in open_orders.items():
         sym = pair.replace("B-", "").replace("_USDT", "")
+        # Try multiple lookup strategies
         mark = prices.get(pair, 0)
+        if not mark:
+            # Try without 1000 prefix: B-1000BONK_USDT → B-BONK_USDT
+            alt = pair.replace("1000", "")
+            mark = prices.get(alt, 0)
+        if not mark:
+            # Try lowercase
+            mark = prices.get(pair.lower(), 0)
+        if not mark:
+            # Brute force: search for symbol name in keys
+            search = sym.replace("1000", "").upper()
+            for k, v in prices.items():
+                if k.startswith("B-") and search + "_USDT" in k.upper():
+                    mark = v
+                    break
         entry = o["avg_price"]
         qty = o["qty"]
         if mark > 0:
@@ -226,7 +241,7 @@ def build_stats(completed, open_orders):
         open_list.append({
             "symbol": sym, "side": o["side"].upper(),
             "entry": round(entry, 8), "mark": round(mark, 8) if mark else 0,
-            "upnl_inr": round(upnl_inr, 2),
+            "upnl_inr": round(upnl_inr, 2), "pair": pair,
         })
 
     longs = [t for t in completed if t["side"] == "BUY"]
