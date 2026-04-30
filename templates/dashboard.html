@@ -15,7 +15,15 @@ body{background:#0a0a0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 .refresh-btn{background:#1a1a2e;border:1px solid #2a2a3e;color:#aaa;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px}
 .refresh-btn:hover{background:#2a2a3e;color:#fff}
 .live-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;animation:pulse 2s infinite}
+.live-dot.warn{background:#f59e0b}
+.live-dot.err{background:#ef4444}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.error-banner{background:#2a1212;border:1px solid #5a1f1f;color:#fca5a5;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px;display:flex;align-items:flex-start;gap:10px}
+.error-banner .err-title{color:#ef4444;font-weight:600;margin-right:8px}
+.error-banner .err-detail{color:#fca5a5;font-family:'SF Mono',Monaco,monospace;font-size:12px;word-break:break-word}
+.error-banner a{color:#f59e0b;text-decoration:underline}
+.warn-banner{background:#2a1f0a;border:1px solid #5a3f1f;color:#fcd34d;padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:12px}
 
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px}
 .kpi{background:#12121e;border:1px solid #1e1e30;border-radius:10px;padding:16px}
@@ -44,18 +52,6 @@ tr:hover{background:#1a1a28}
 .badge-long{background:#0a1a2e;color:#3b82f6;padding:2px 8px;border-radius:4px;font-size:10px}
 .badge-short{background:#2e1a2e;color:#c084fc;padding:2px 8px;border-radius:4px;font-size:10px}
 
-.open-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
-.open-card{background:#1a1a28;border-radius:8px;padding:12px;border-left:3px solid #3b82f6}
-.open-card.short{border-left-color:#c084fc}
-.open-card .sym{font-weight:600;font-size:14px;color:#fff}
-.open-card .meta{font-size:11px;color:#666;margin-top:4px}
-
-.symbol-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
-.sym-card{background:#1a1a28;border-radius:8px;padding:12px}
-.sym-card .sym-name{font-weight:600;font-size:13px;color:#fff}
-.sym-card .sym-stats{font-size:11px;color:#888;margin-top:4px}
-.sym-card .sym-pnl{font-size:16px;font-weight:600;margin-top:6px}
-
 .daily-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #1a1a28}
 .daily-date{width:80px;font-size:12px;color:#888}
 .daily-bar-wrap{flex:1;height:20px;position:relative;display:flex;align-items:center}
@@ -66,9 +62,10 @@ tr:hover{background:#1a1a28}
 .spinner{width:24px;height:24px;border:2px solid #333;border-top:2px solid #6366f1;border-radius:50%;animation:spin .8s linear infinite;margin-right:12px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-.tab-bar{display:flex;gap:4px;margin-bottom:16px}
-.tab{padding:6px 16px;border-radius:6px;font-size:12px;color:#666;cursor:pointer;background:transparent;border:none}
-.tab.active{background:#1e1e30;color:#fff}
+.empty{text-align:center;padding:48px 16px;color:#555}
+.empty h2{color:#888;font-weight:500;font-size:18px;margin-bottom:8px}
+.empty p{font-size:13px;margin-bottom:16px}
+.empty code{background:#1a1a28;color:#aaa;padding:2px 8px;border-radius:4px;font-family:'SF Mono',Monaco,monospace;font-size:12px}
 
 @media(max-width:768px){
   .charts{grid-template-columns:1fr}
@@ -84,35 +81,101 @@ tr:hover{background:#1a1a28}
 <script>
 let allData = null;
 let refreshInterval = null;
+let charts = [];
 
 async function fetchData() {
   try {
-    const r = await fetch('/api/data');
+    const r = await fetch('/api/data', {cache: 'no-store'});
     allData = await r.json();
     render(allData);
   } catch(e) {
-    document.getElementById('app').innerHTML = '<div class="loading" style="color:#ef4444">Failed to fetch data. Check API keys.</div>';
+    document.getElementById('app').innerHTML = `
+      <div class="error-banner">
+        <div>
+          <span class="err-title">NETWORK ERROR</span>
+          <span class="err-detail">Could not reach the dashboard server: ${e.message}</span>
+          <div style="margin-top:8px;color:#888">The server may be redeploying. This page will retry automatically.</div>
+        </div>
+      </div>`;
   }
 }
 
-function fmt(v) { return v >= 0 ? '+₹' + v.toLocaleString('en-IN') : '-₹' + Math.abs(v).toLocaleString('en-IN'); }
-function fmtPct(v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + '%'; }
-function cls(v) { return v >= 0 ? 'green' : 'red'; }
+function fmt(v) { v = v || 0; return v >= 0 ? '+₹' + v.toLocaleString('en-IN') : '-₹' + Math.abs(v).toLocaleString('en-IN'); }
+function fmtPct(v) { v = v || 0; return (v >= 0 ? '+' : '') + v.toFixed(1) + '%'; }
+function cls(v) { return (v || 0) >= 0 ? 'green' : 'red'; }
+
+function ago(epoch) {
+  if (!epoch) return 'never';
+  const s = Math.floor(Date.now()/1000 - epoch);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  return Math.floor(s/3600) + 'h ago';
+}
+
+function destroyCharts() {
+  charts.forEach(c => { try { c.destroy(); } catch(e) {} });
+  charts = [];
+}
 
 function render(data) {
-  const { trades, stats } = data;
+  destroyCharts();
+  const { trades, stats, error, last_fetch_ok, stale } = data;
   const s = stats;
+  const hasData = trades && trades.length > 0;
+  const dotClass = error ? 'err' : (stale ? 'warn' : '');
+
+  // Build error banner if any
+  let banner = '';
+  if (error) {
+    banner = `
+      <div class="error-banner">
+        <div style="flex:1">
+          <span class="err-title">FETCH ISSUE</span>
+          <span class="err-detail">${escapeHtml(error)}</span>
+          <div style="margin-top:6px;color:#888;font-size:11px">
+            ${hasData ? `Showing cached data from ${ago(last_fetch_ok)}.` : 'No cached data available.'}
+            Open <a href="/api/diagnose" target="_blank">/api/diagnose</a> or <a href="/api/health" target="_blank">/api/health</a> for details.
+          </div>
+        </div>
+      </div>`;
+  } else if (stale) {
+    banner = `<div class="warn-banner">Data is stale (last successful fetch ${ago(last_fetch_ok)}). Trying to refresh.</div>`;
+  }
+
+  // If no data at all, show empty state with diagnostic links
+  if (!hasData) {
+    document.getElementById('app').innerHTML = `
+      <div class="header">
+        <h1>CoinDCX Futures <span>Dashboard</span></h1>
+        <div class="header-right">
+          <span><span class="live-dot ${dotClass}"></span> ${error ? 'Error' : 'Waiting'}</span>
+          <button class="refresh-btn" onclick="manualRefresh()">Retry</button>
+        </div>
+      </div>
+      ${banner}
+      <div class="empty">
+        <h2>No trades to display yet</h2>
+        <p>Either no trades have been recorded since <code>${escapeHtml(allData.stats && allData.stats.start ? new Date().toISOString().slice(0,10) : '')}</code>,
+           or the dashboard hasn't reached CoinDCX yet.</p>
+        <p style="margin-top:12px">Check <a href="/api/health" target="_blank" style="color:#6366f1">/api/health</a>
+           and <a href="/api/diagnose" target="_blank" style="color:#6366f1">/api/diagnose</a> for diagnostic info.</p>
+      </div>`;
+    return;
+  }
+
   const maxDailyPnl = s.daily.length ? Math.max(...s.daily.map(d => Math.abs(d.pnl))) : 1;
 
   document.getElementById('app').innerHTML = `
     <div class="header">
       <h1>CoinDCX Futures <span>Dashboard</span></h1>
       <div class="header-right">
-        <span><span class="live-dot"></span> Auto-refresh 30s</span>
+        <span><span class="live-dot ${dotClass}"></span> Auto-refresh 30s</span>
         <span id="lastUpdate"></span>
         <button class="refresh-btn" onclick="manualRefresh()">Refresh Now</button>
       </div>
     </div>
+
+    ${banner}
 
     <div class="kpi-grid">
       <div class="kpi">
@@ -123,7 +186,7 @@ function render(data) {
       <div class="kpi">
         <div class="kpi-label">Sum ROI</div>
         <div class="kpi-value ${cls(s.sum_roi)}">${fmtPct(s.sum_roi)}</div>
-        <div class="kpi-sub"><span class="green">+${s.sum_tp_roi.toFixed(1)}%</span> / <span class="red">${s.sum_sl_roi.toFixed(1)}%</span></div>
+        <div class="kpi-sub"><span class="green">+${(s.sum_tp_roi||0).toFixed(1)}%</span> / <span class="red">${(s.sum_sl_roi||0).toFixed(1)}%</span></div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Capital (closed)</div>
@@ -227,13 +290,13 @@ function render(data) {
           ${trades.map((t, i) => `
             <tr>
               <td>${i + 1}</td>
-              <td style="font-weight:500;color:#fff">${t.symbol}</td>
+              <td style="font-weight:500;color:#fff">${escapeHtml(t.symbol)}</td>
               <td><span class="${t.side === 'BUY' ? 'badge-long' : 'badge-short'}">${t.side}</span></td>
               <td class="mono">${t.entry_price}</td>
               <td class="mono">${t.exit_price}</td>
               <td class="text-right ${cls(t.net_inr)}" style="font-weight:500">${fmt(t.net_inr)}</td>
               <td class="text-right ${cls(t.roi)}">${fmtPct(t.roi)}</td>
-              <td class="text-right" style="color:#666">${t.exit_time}</td>
+              <td class="text-right" style="color:#666">${escapeHtml(t.exit_time)}</td>
               <td class="text-center"><span class="${t.status === 'TP' ? 'badge-tp' : 'badge-sl'}">${t.status}</span></td>
             </tr>
           `).join('')}
@@ -247,13 +310,17 @@ function render(data) {
   drawCharts(s, trades);
 }
 
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function drawCharts(s, trades) {
   const green = '#22c55e';
   const red = '#ef4444';
   const grid = 'rgba(255,255,255,0.04)';
   const txt = 'rgba(255,255,255,0.35)';
 
-  new Chart(document.getElementById('equityChart'), {
+  charts.push(new Chart(document.getElementById('equityChart'), {
     type: 'line',
     data: {
       labels: s.equity.map((_, i) => i === 0 ? 'Start' : String(i)),
@@ -274,9 +341,9 @@ function drawCharts(s, trades) {
         y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v.toLocaleString('en-IN') } }
       }
     }
-  });
+  }));
 
-  new Chart(document.getElementById('pnlChart'), {
+  charts.push(new Chart(document.getElementById('pnlChart'), {
     type: 'bar',
     data: {
       labels: trades.map((_, i) => String(i + 1)),
@@ -299,10 +366,10 @@ function drawCharts(s, trades) {
         y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v } }
       }
     }
-  });
+  }));
 
   const symSorted = [...s.symbols].sort((a, b) => b.pnl - a.pnl);
-  new Chart(document.getElementById('symbolChart'), {
+  charts.push(new Chart(document.getElementById('symbolChart'), {
     type: 'bar',
     data: {
       labels: symSorted.map(sym => sym.symbol + ' (' + sym.trades + 'T)'),
@@ -325,9 +392,9 @@ function drawCharts(s, trades) {
         y: { grid: { display: false }, ticks: { color: '#ccc', font: { size: 11 } } }
       }
     }
-  });
+  }));
 
-  new Chart(document.getElementById('sideChart'), {
+  charts.push(new Chart(document.getElementById('sideChart'), {
     type: 'doughnut',
     data: {
       labels: ['Long TP', 'Long SL', 'Short TP', 'Short SL'],
@@ -349,11 +416,11 @@ function drawCharts(s, trades) {
         tooltip: { callbacks: { label: c => c.label + ': ' + c.parsed + ' trades' } }
       }
     }
-  });
+  }));
 }
 
 async function manualRefresh() {
-  await fetch('/api/refresh');
+  try { await fetch('/api/refresh', {cache: 'no-store'}); } catch(e) {}
   await fetchData();
 }
 
