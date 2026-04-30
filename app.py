@@ -86,6 +86,11 @@ _load_disk_cache()
 # ---------- CoinDCX API ----------
 def sign_and_post(body):
     """Returns (data, error_string). data is parsed JSON or None. error_string is None on success."""
+    return _signed_post(ENDPOINT, body)
+
+
+def _signed_post(path, body, timeout=None):
+    """Generic signed POST. Returns (data, error_string)."""
     if not API_KEY or not API_SECRET:
         return None, "API keys not configured (COINDCX_API_KEY / COINDCX_API_SECRET)"
     body = dict(body)
@@ -99,13 +104,13 @@ def sign_and_post(body):
     }
     try:
         resp = _session.post(
-            f"{BASE_URL}{ENDPOINT}",
+            f"{BASE_URL}{path}",
             data=json_body,
             headers=headers,
-            timeout=REQUEST_TIMEOUT,
+            timeout=timeout or REQUEST_TIMEOUT,
         )
     except requests.exceptions.Timeout:
-        return None, f"timeout after {REQUEST_TIMEOUT[1]}s contacting CoinDCX"
+        return None, f"timeout after {(timeout or REQUEST_TIMEOUT)[1]}s contacting CoinDCX"
     except requests.exceptions.ConnectionError as e:
         return None, f"connection error: {type(e).__name__}"
     except requests.exceptions.RequestException as e:
@@ -117,15 +122,129 @@ def sign_and_post(body):
         except ValueError:
             return None, f"non-JSON response (status 200)"
 
-    # Try to extract a useful message from the response body
     body_snippet = resp.text[:200] if resp.text else ""
     if resp.status_code == 401:
         return None, f"401 unauthorized — API keys rejected. {body_snippet}"
     if resp.status_code == 403:
         return None, f"403 forbidden — IP whitelist or permission issue. {body_snippet}"
+    if resp.status_code == 404:
+        return None, f"404 not found at {path}"
     if resp.status_code == 429:
         return None, f"429 rate limited"
     return None, f"HTTP {resp.status_code}: {body_snippet}"
+
+
+# ---------- live wallet / open positions ----------
+_wallet_cache = {"data": None, "ts": 0, "lock": threading.Lock()}
+WALLET_CACHE_TTL = 20  # seconds
+
+
+def _to_float(x, default=0.0):
+    try:
+        return float(x) if x is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def fetch_open_positions():
+    """Fetch open futures positions. Returns (positions_list, error)."""
+    data, err = _signed_post(
+        "/exchange/v1/derivatives/futures/positions",
+        {"page": "1", "size": "100", "margin_currency_short_name": ["USDT"]},
+        timeout=(10, 15),
+    )
+    if err:
+        # Try without the margin_currency filter (older API variations)
+        data, err2 = _signed_post(
+            "/exchange/v1/derivatives/futures/positions",
+            {"page": "1", "size": "100"},
+            timeout=(10, 15),
+        )
+        if err2:
+            return [], err  # keep first error message
+
+    # Response can be a list or {"data": [...]}
+    if isinstance(data, dict):
+        data = data.get("data") or data.get("positions") or []
+    if not isinstance(data, list):
+        return [], f"unexpected positions response shape: {type(data).__name__}"
+
+    # Filter to actually-open positions (active_pos > 0 or status == "open")
+    open_pos = []
+    for p in data:
+        active_pos = _to_float(p.get("active_pos") or p.get("quantity") or p.get("size"), 0)
+        status = (p.get("status") or "").lower()
+        if active_pos != 0 or status == "open":
+            open_pos.append(p)
+    return open_pos, None
+
+
+def build_wallet_summary():
+    """Builds a live wallet snapshot from open positions + closed P&L.
+    Cached briefly to avoid hammering the API on every dashboard refresh."""
+    now = time.time()
+    with _wallet_cache["lock"]:
+        if _wallet_cache["data"] and now - _wallet_cache["ts"] < WALLET_CACHE_TTL:
+            return _wallet_cache["data"]
+
+    positions, err = fetch_open_positions()
+
+    open_unrealized_usdt = 0.0
+    open_locked_margin_usdt = 0.0
+    open_positions_summary = []
+
+    for p in positions:
+        # Field names vary slightly across CoinDCX API versions; try several.
+        pair = p.get("pair") or p.get("market") or ""
+        symbol = pair.replace("B-", "").replace("_USDT", "")
+        side_raw = (p.get("side") or "").lower()
+        if not side_raw:
+            # Some responses use signed quantity to indicate side
+            qty_signed = _to_float(p.get("active_pos") or p.get("quantity"), 0)
+            side_raw = "buy" if qty_signed > 0 else "sell" if qty_signed < 0 else ""
+
+        unrealized = _to_float(
+            p.get("pnl") or p.get("unrealized_pnl") or p.get("active_pnl"), 0
+        )
+        locked_margin = _to_float(
+            p.get("locked_margin") or p.get("margin") or p.get("locked_user_margin"), 0
+        )
+        avg_entry = _to_float(p.get("avg_price") or p.get("avg_entry_price"), 0)
+        mark_price = _to_float(p.get("mark_price") or p.get("last_price"), 0)
+        qty = abs(_to_float(p.get("active_pos") or p.get("quantity") or p.get("size"), 0))
+        leverage = _to_float(p.get("leverage"), 0)
+        liq_price = _to_float(p.get("liquidation_price") or p.get("liq_price"), 0)
+
+        open_unrealized_usdt += unrealized
+        open_locked_margin_usdt += locked_margin
+
+        open_positions_summary.append({
+            "symbol": symbol,
+            "pair": pair,
+            "side": side_raw.upper(),
+            "qty": qty,
+            "avg_entry": avg_entry,
+            "mark_price": mark_price,
+            "leverage": leverage,
+            "liq_price": liq_price,
+            "unrealized_usdt": round(unrealized, 4),
+            "unrealized_inr": round(unrealized * USDT_INR, 2),
+            "locked_margin_inr": round(locked_margin * USDT_INR, 2),
+        })
+
+    summary = {
+        "ok": err is None,
+        "error": err,
+        "open_count": len(open_positions_summary),
+        "open_positions": open_positions_summary,
+        "open_unrealized_inr": round(open_unrealized_usdt * USDT_INR, 2),
+        "open_locked_margin_inr": round(open_locked_margin_usdt * USDT_INR, 2),
+        # current_value is computed by caller (needs closed P&L)
+    }
+    with _wallet_cache["lock"]:
+        _wallet_cache["data"] = summary
+        _wallet_cache["ts"] = now
+    return summary
 
 
 def _fetch_trades_blocking():
@@ -274,7 +393,10 @@ def pair_trades(trades):
                 "roi": round(roi, 2),
                 "entry_time": entry_dt.strftime("%m/%d %H:%M"),
                 "exit_time": exit_dt.strftime("%m/%d %H:%M"),
+                "entry_date": entry_dt.strftime("%Y-%m-%d"),
                 "exit_date": exit_dt.strftime("%Y-%m-%d"),
+                "entry_ts": int(entry["timestamp"]),
+                "exit_ts": int(exit_o["timestamp"]),
                 "status": "TP" if net_pnl > 0 else "SL",
             })
 
@@ -406,12 +528,25 @@ def api_data():
         trades = fetch_all_trades_since_start()
         completed, open_orders = pair_trades(trades)
         stats = build_stats(completed, open_orders)
+
+        # Live wallet/positions snapshot
+        wallet = build_wallet_summary()
+        # Live "current value" = starting capital + closed realized PnL + unrealized PnL on open positions
+        # This matches CoinDCX's "Current value" most of the time (when STARTING_CAPITAL was the wallet on START_DATE).
+        closed_pnl_inr = stats.get("net_inr", 0.0) or 0.0
+        wallet["closed_pnl_inr"] = round(closed_pnl_inr, 2)
+        wallet["starting_capital_inr"] = STARTING_CAPITAL
+        wallet["live_current_value_inr"] = round(
+            STARTING_CAPITAL + closed_pnl_inr + (wallet.get("open_unrealized_inr") or 0.0), 2
+        )
+
         with _state_lock:
             err = _state["last_error"]
             last_ok = _state["last_fetch_ok"]
         return jsonify({
             "trades": completed,
             "stats": stats,
+            "wallet": wallet,
             "error": err,
             "last_fetch_ok": last_ok,
             "stale": bool(trades) and (time.time() - last_ok) > CACHE_TTL * 2,
@@ -419,10 +554,16 @@ def api_data():
     except Exception as e:
         log.exception("api_data failed")
         return jsonify({
-            "trades": [], "stats": _empty_stats(),
+            "trades": [], "stats": _empty_stats(), "wallet": None,
             "error": f"server error: {type(e).__name__}: {e}",
             "last_fetch_ok": 0, "stale": True,
         }), 200  # 200 so frontend can read body
+
+
+@app.route("/api/wallet")
+def api_wallet():
+    """Live wallet snapshot — useful for debugging the new feature in isolation."""
+    return jsonify(build_wallet_summary())
 
 
 @app.route("/api/refresh")

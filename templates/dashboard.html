@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CoinDCX Futures Dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px;min-height:100vh}
@@ -35,15 +36,35 @@ body{background:#0a0a0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 .charts{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
 .chart-card{background:#12121e;border:1px solid #1e1e30;border-radius:10px;padding:16px}
 .chart-card h3{font-size:13px;color:#888;font-weight:500;margin-bottom:12px}
+.chart-card .chart-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.chart-card .chart-header h3{margin-bottom:0}
 .chart-wrap{position:relative;height:250px}
+.filter-row{display:flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap}
+.filter-row label{color:#888}
+.filter-row input[type="date"]{background:#1a1a28;border:1px solid #2a2a3e;color:#ccc;padding:4px 8px;border-radius:5px;font-size:12px;font-family:inherit;color-scheme:dark}
+.filter-row .filter-btn{background:#1a1a28;border:1px solid #2a2a3e;color:#aaa;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px}
+.filter-row .filter-btn:hover{background:#2a2a3e;color:#fff}
+.filter-row .filter-btn.active{background:#3730a3;border-color:#4f46e5;color:#fff}
+.filter-row .count{color:#666;font-size:11px;margin-left:6px}
 
 .section{background:#12121e;border:1px solid #1e1e30;border-radius:10px;padding:16px;margin-bottom:16px}
 .section h3{font-size:13px;color:#888;font-weight:500;margin-bottom:12px}
+.section-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.section-header h3{margin-bottom:0}
+.export-btn{background:#1a1a28;border:1px solid #2a2a3e;color:#aaa;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.export-btn:hover{background:#1f4d2f;border-color:#22c55e;color:#fff}
+.export-btn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2}
 
 table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;padding:8px 6px;color:#555;font-weight:500;border-bottom:1px solid #1e1e30;position:sticky;top:0;background:#12121e}
+th{text-align:left;padding:8px 6px;color:#666;font-weight:500;border-bottom:1px solid #1e1e30;position:sticky;top:0;background:#12121e;cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:#fff;background:#1a1a28}
+th.no-sort{cursor:default}
+th.no-sort:hover{color:#666;background:#12121e}
+th .sort-arrow{display:inline-block;margin-left:3px;font-size:9px;opacity:0.4;width:8px}
+th.sorted .sort-arrow{opacity:1;color:#6366f1}
+th.sorted{color:#fff}
 td{padding:7px 6px;border-bottom:1px solid #1a1a28}
-tr:hover{background:#1a1a28}
+tr:hover td{background:#1a1a28}
 .text-right{text-align:right}
 .text-center{text-align:center}
 .mono{font-family:'SF Mono',Monaco,monospace;font-size:11px}
@@ -81,7 +102,20 @@ tr:hover{background:#1a1a28}
 <script>
 let allData = null;
 let refreshInterval = null;
-let charts = [];
+let charts = {};
+
+// Sort state for trade log: default is most recent first (newest on top)
+let sortState = { key: 'exit_ts', dir: 'desc' };
+
+// Per-trade P&L date filter: default = today (IST)
+let perTradeFilter = { mode: 'today', date: todayIstDate() };
+
+function todayIstDate() {
+  // Returns YYYY-MM-DD for today in IST regardless of user's local zone
+  const now = new Date();
+  const ist = new Date(now.getTime() + (5 * 60 + 30) * 60 * 1000 - now.getTimezoneOffset() * 60 * 1000);
+  return ist.toISOString().slice(0, 10);
+}
 
 async function fetchData() {
   try {
@@ -93,7 +127,7 @@ async function fetchData() {
       <div class="error-banner">
         <div>
           <span class="err-title">NETWORK ERROR</span>
-          <span class="err-detail">Could not reach the dashboard server: ${e.message}</span>
+          <span class="err-detail">Could not reach the dashboard server: ${escapeHtml(e.message)}</span>
           <div style="margin-top:8px;color:#888">The server may be redeploying. This page will retry automatically.</div>
         </div>
       </div>`;
@@ -113,18 +147,124 @@ function ago(epoch) {
 }
 
 function destroyCharts() {
-  charts.forEach(c => { try { c.destroy(); } catch(e) {} });
-  charts = [];
+  Object.values(charts).forEach(c => { try { c.destroy(); } catch(e) {} });
+  charts = {};
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function getSortedTrades() {
+  if (!allData || !allData.trades) return [];
+  const { key, dir } = sortState;
+  const sorted = [...allData.trades];
+  sorted.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (typeof av === 'string') {
+      av = av.toLowerCase(); bv = (bv || '').toLowerCase();
+      if (av < bv) return dir === 'asc' ? -1 : 1;
+      if (av > bv) return dir === 'asc' ? 1 : -1;
+      return 0;
+    }
+    av = av == null ? 0 : av;
+    bv = bv == null ? 0 : bv;
+    return dir === 'asc' ? av - bv : bv - av;
+  });
+  return sorted;
+}
+
+function setSort(key) {
+  if (sortState.key === key) {
+    sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortState.key = key;
+    // Strings default asc; numbers/timestamps default desc
+    sortState.dir = ['symbol', 'side', 'status'].includes(key) ? 'asc' : 'desc';
+  }
+  renderTradeTable();
+}
+
+function sortArrow(key) {
+  if (sortState.key !== key) return '<span class="sort-arrow">↕</span>';
+  return `<span class="sort-arrow">${sortState.dir === 'asc' ? '↑' : '↓'}</span>`;
+}
+
+function thClass(key) {
+  return 'sortable' + (sortState.key === key ? ' sorted' : '');
+}
+
+function setPerTradeFilter(mode) {
+  perTradeFilter.mode = mode;
+  if (mode === 'today') perTradeFilter.date = todayIstDate();
+  renderPnlChart();
+  // Sync the date input + button visuals
+  const dateInput = document.getElementById('pnlDateInput');
+  if (dateInput) dateInput.value = perTradeFilter.date;
+  document.querySelectorAll('.pnl-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === perTradeFilter.mode);
+  });
+}
+
+function setPerTradeDate(date) {
+  perTradeFilter.mode = (date === todayIstDate()) ? 'today' : 'date';
+  perTradeFilter.date = date;
+  renderPnlChart();
+  document.querySelectorAll('.pnl-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === perTradeFilter.mode);
+  });
+}
+
+function getFilteredPerTradeTrades() {
+  if (!allData || !allData.trades) return [];
+  const trades = [...allData.trades].sort((a, b) => a.exit_ts - b.exit_ts); // chronological for the bar chart x-axis
+  if (perTradeFilter.mode === 'all') return trades;
+  return trades.filter(t => t.exit_date === perTradeFilter.date);
+}
+
+function exportToExcel() {
+  const trades = getSortedTrades();
+  if (!trades.length) { alert('No trades to export.'); return; }
+
+  const rows = trades.map((t, i) => ({
+    '#': i + 1,
+    'Symbol': t.symbol,
+    'Pair': t.pair,
+    'Side': t.side,
+    'Entry Price': t.entry_price,
+    'Exit Price': t.exit_price,
+    'Quantity': t.qty,
+    'Net P&L (INR)': t.net_inr,
+    'P&L (USDT)': t.pnl_usdt,
+    'Fees (USDT)': t.fees_usdt,
+    'ROI %': t.roi,
+    'Status': t.status,
+    'Entry Time': t.entry_time,
+    'Exit Time': t.exit_time,
+    'Exit Date': t.exit_date,
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const cols = Object.keys(rows[0]).map(k => {
+    const maxLen = Math.max(k.length, ...rows.map(r => String(r[k] == null ? '' : r[k]).length));
+    return { wch: Math.min(maxLen + 2, 30) };
+  });
+  ws['!cols'] = cols;
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Trades');
+
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  XLSX.writeFile(wb, `coindcx-trades-${ts}.xlsx`);
 }
 
 function render(data) {
   destroyCharts();
-  const { trades, stats, error, last_fetch_ok, stale } = data;
+  const { trades, stats, error, last_fetch_ok, stale, wallet } = data;
   const s = stats;
   const hasData = trades && trades.length > 0;
   const dotClass = error ? 'err' : (stale ? 'warn' : '');
 
-  // Build error banner if any
   let banner = '';
   if (error) {
     banner = `
@@ -142,7 +282,6 @@ function render(data) {
     banner = `<div class="warn-banner">Data is stale (last successful fetch ${ago(last_fetch_ok)}). Trying to refresh.</div>`;
   }
 
-  // If no data at all, show empty state with diagnostic links
   if (!hasData) {
     document.getElementById('app').innerHTML = `
       <div class="header">
@@ -155,7 +294,7 @@ function render(data) {
       ${banner}
       <div class="empty">
         <h2>No trades to display yet</h2>
-        <p>Either no trades have been recorded since <code>${escapeHtml(allData.stats && allData.stats.start ? new Date().toISOString().slice(0,10) : '')}</code>,
+        <p>Either no trades have been recorded since the configured start date,
            or the dashboard hasn't reached CoinDCX yet.</p>
         <p style="margin-top:12px">Check <a href="/api/health" target="_blank" style="color:#6366f1">/api/health</a>
            and <a href="/api/diagnose" target="_blank" style="color:#6366f1">/api/diagnose</a> for diagnostic info.</p>
@@ -164,6 +303,13 @@ function render(data) {
   }
 
   const maxDailyPnl = s.daily.length ? Math.max(...s.daily.map(d => Math.abs(d.pnl))) : 1;
+
+  // Live wallet figure (from /positions). Falls back to closed-only if wallet fetch failed.
+  const liveValue = (wallet && wallet.live_current_value_inr != null) ? wallet.live_current_value_inr : s.end;
+  const openUnrealized = wallet ? (wallet.open_unrealized_inr || 0) : 0;
+  const openCount = wallet ? (wallet.open_count || 0) : 0;
+  const lockedMargin = wallet ? (wallet.open_locked_margin_inr || 0) : 0;
+  const walletErr = wallet && wallet.error;
 
   document.getElementById('app').innerHTML = `
     <div class="header">
@@ -179,7 +325,7 @@ function render(data) {
 
     <div class="kpi-grid">
       <div class="kpi">
-        <div class="kpi-label">Net P&L</div>
+        <div class="kpi-label">Net P&L (closed)</div>
         <div class="kpi-value ${cls(s.net_inr)}">${fmt(s.net_inr)}</div>
         <div class="kpi-sub">${fmtPct(s.return_pct)} on capital</div>
       </div>
@@ -188,10 +334,14 @@ function render(data) {
         <div class="kpi-value ${cls(s.sum_roi)}">${fmtPct(s.sum_roi)}</div>
         <div class="kpi-sub"><span class="green">+${(s.sum_tp_roi||0).toFixed(1)}%</span> / <span class="red">${(s.sum_sl_roi||0).toFixed(1)}%</span></div>
       </div>
-      <div class="kpi">
-        <div class="kpi-label">Capital (closed)</div>
-        <div class="kpi-value">₹${s.end.toLocaleString('en-IN')}</div>
-        <div class="kpi-sub">from ₹${s.start.toLocaleString('en-IN')}</div>
+      <div class="kpi" title="Starting capital + closed realized PnL + unrealized PnL on open positions">
+        <div class="kpi-label">Current Value ${walletErr ? '<span class="amber" title="Live position fetch failed; showing closed-only">⚠</span>' : ''}</div>
+        <div class="kpi-value">₹${liveValue.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+        <div class="kpi-sub">
+          ${openCount > 0
+            ? `${openCount} open · <span class="${cls(openUnrealized)}">${fmt(openUnrealized)}</span> unrealized`
+            : `from ₹${s.start.toLocaleString('en-IN')}`}
+        </div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Win Rate</div>
@@ -225,7 +375,15 @@ function render(data) {
         <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
       </div>
       <div class="chart-card">
-        <h3>Per-trade P&L</h3>
+        <div class="chart-header">
+          <h3>Per-trade P&L</h3>
+          <div class="filter-row">
+            <button class="pnl-filter-btn filter-btn ${perTradeFilter.mode === 'today' ? 'active' : ''}" data-mode="today" onclick="setPerTradeFilter('today')">Today</button>
+            <button class="pnl-filter-btn filter-btn ${perTradeFilter.mode === 'all' ? 'active' : ''}" data-mode="all" onclick="setPerTradeFilter('all')">All</button>
+            <input type="date" id="pnlDateInput" value="${perTradeFilter.date}" onchange="setPerTradeDate(this.value)" />
+            <span class="count" id="pnlChartCount"></span>
+          </div>
+        </div>
         <div class="chart-wrap"><canvas id="pnlChart"></canvas></div>
       </div>
     </div>
@@ -275,52 +433,80 @@ function render(data) {
       </div>
     </div>
 
-    <div class="section">
-      <h3>Trade log (${trades.length} trades)</h3>
+    <div class="section" id="tradeLogSection">
+      <div class="section-header">
+        <h3>Trade log <span style="color:#555">(${trades.length} trades · click columns to sort)</span></h3>
+        <button class="export-btn" onclick="exportToExcel()" title="Download all trades as .xlsx">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          Export to Excel
+        </button>
+      </div>
       <div style="max-height:500px;overflow-y:auto">
-      <table>
+      <table id="tradeTable">
         <thead>
           <tr>
-            <th>#</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th>
-            <th class="text-right">Net P&L</th><th class="text-right">ROI</th>
-            <th class="text-right">Time</th><th class="text-center"></th>
+            <th class="no-sort">#</th>
+            <th class="${thClass('symbol')}" onclick="setSort('symbol')">Symbol${sortArrow('symbol')}</th>
+            <th class="${thClass('side')}" onclick="setSort('side')">Side${sortArrow('side')}</th>
+            <th class="${thClass('entry_price')}" onclick="setSort('entry_price')">Entry${sortArrow('entry_price')}</th>
+            <th class="${thClass('exit_price')}" onclick="setSort('exit_price')">Exit${sortArrow('exit_price')}</th>
+            <th class="text-right ${thClass('net_inr')}" onclick="setSort('net_inr')">Net P&L${sortArrow('net_inr')}</th>
+            <th class="text-right ${thClass('roi')}" onclick="setSort('roi')">ROI${sortArrow('roi')}</th>
+            <th class="text-right ${thClass('exit_ts')}" onclick="setSort('exit_ts')">Time${sortArrow('exit_ts')}</th>
+            <th class="text-center ${thClass('status')}" onclick="setSort('status')">Status${sortArrow('status')}</th>
           </tr>
         </thead>
-        <tbody>
-          ${trades.map((t, i) => `
-            <tr>
-              <td>${i + 1}</td>
-              <td style="font-weight:500;color:#fff">${escapeHtml(t.symbol)}</td>
-              <td><span class="${t.side === 'BUY' ? 'badge-long' : 'badge-short'}">${t.side}</span></td>
-              <td class="mono">${t.entry_price}</td>
-              <td class="mono">${t.exit_price}</td>
-              <td class="text-right ${cls(t.net_inr)}" style="font-weight:500">${fmt(t.net_inr)}</td>
-              <td class="text-right ${cls(t.roi)}">${fmtPct(t.roi)}</td>
-              <td class="text-right" style="color:#666">${escapeHtml(t.exit_time)}</td>
-              <td class="text-center"><span class="${t.status === 'TP' ? 'badge-tp' : 'badge-sl'}">${t.status}</span></td>
-            </tr>
-          `).join('')}
-        </tbody>
+        <tbody id="tradeTableBody"></tbody>
       </table>
       </div>
     </div>
   `;
 
   document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString('en-IN');
-  drawCharts(s, trades);
+  renderTradeTable();
+  drawCharts(s);
+  renderPnlChart();
 }
 
-function escapeHtml(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function renderTradeTable() {
+  const body = document.getElementById('tradeTableBody');
+  if (!body) return;
+  const sorted = getSortedTrades();
+  body.innerHTML = sorted.map((t, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td style="font-weight:500;color:#fff">${escapeHtml(t.symbol)}</td>
+      <td><span class="${t.side === 'BUY' ? 'badge-long' : 'badge-short'}">${t.side}</span></td>
+      <td class="mono">${t.entry_price}</td>
+      <td class="mono">${t.exit_price}</td>
+      <td class="text-right ${cls(t.net_inr)}" style="font-weight:500">${fmt(t.net_inr)}</td>
+      <td class="text-right ${cls(t.roi)}">${fmtPct(t.roi)}</td>
+      <td class="text-right" style="color:#666">${escapeHtml(t.exit_time)}</td>
+      <td class="text-center"><span class="${t.status === 'TP' ? 'badge-tp' : 'badge-sl'}">${t.status}</span></td>
+    </tr>
+  `).join('');
+
+  // Update header sort arrows / classes
+  document.querySelectorAll('#tradeTable thead th.sortable').forEach(th => {
+    const onclick = th.getAttribute('onclick') || '';
+    const m = onclick.match(/setSort\('([^']+)'\)/);
+    const key = m ? m[1] : null;
+    if (!key) return;
+    th.classList.toggle('sorted', sortState.key === key);
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) {
+      arrow.textContent = sortState.key !== key ? '↕' : (sortState.dir === 'asc' ? '↑' : '↓');
+    }
+  });
 }
 
-function drawCharts(s, trades) {
+function drawCharts(s) {
   const green = '#22c55e';
   const red = '#ef4444';
   const grid = 'rgba(255,255,255,0.04)';
   const txt = 'rgba(255,255,255,0.35)';
 
-  charts.push(new Chart(document.getElementById('equityChart'), {
+  charts.equity = new Chart(document.getElementById('equityChart'), {
     type: 'line',
     data: {
       labels: s.equity.map((_, i) => i === 0 ? 'Start' : String(i)),
@@ -341,35 +527,10 @@ function drawCharts(s, trades) {
         y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v.toLocaleString('en-IN') } }
       }
     }
-  }));
-
-  charts.push(new Chart(document.getElementById('pnlChart'), {
-    type: 'bar',
-    data: {
-      labels: trades.map((_, i) => String(i + 1)),
-      datasets: [{
-        data: trades.map(t => Math.round(t.net_inr)),
-        backgroundColor: trades.map(t => t.net_inr >= 0 ? green : red),
-        borderRadius: 2, barPercentage: 0.85
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: {
-          label: c => trades[c.dataIndex].symbol + ': ₹' + c.parsed.y,
-          title: c => '#' + c[0].label + ' · ' + trades[c[0].dataIndex].exit_time
-        }}
-      },
-      scales: {
-        x: { grid: { display: false }, ticks: { color: txt, font: { size: 10 }, maxTicksLimit: 12 } },
-        y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v } }
-      }
-    }
-  }));
+  });
 
   const symSorted = [...s.symbols].sort((a, b) => b.pnl - a.pnl);
-  charts.push(new Chart(document.getElementById('symbolChart'), {
+  charts.symbol = new Chart(document.getElementById('symbolChart'), {
     type: 'bar',
     data: {
       labels: symSorted.map(sym => sym.symbol + ' (' + sym.trades + 'T)'),
@@ -392,18 +553,19 @@ function drawCharts(s, trades) {
         y: { grid: { display: false }, ticks: { color: '#ccc', font: { size: 11 } } }
       }
     }
-  }));
+  });
 
-  charts.push(new Chart(document.getElementById('sideChart'), {
+  const allTrades = allData.trades || [];
+  charts.side = new Chart(document.getElementById('sideChart'), {
     type: 'doughnut',
     data: {
       labels: ['Long TP', 'Long SL', 'Short TP', 'Short SL'],
       datasets: [{
         data: [
-          trades.filter(t => t.side === 'BUY' && t.net_inr > 0).length,
-          trades.filter(t => t.side === 'BUY' && t.net_inr <= 0).length,
-          trades.filter(t => t.side === 'SELL' && t.net_inr > 0).length,
-          trades.filter(t => t.side === 'SELL' && t.net_inr <= 0).length,
+          allTrades.filter(t => t.side === 'BUY' && t.net_inr > 0).length,
+          allTrades.filter(t => t.side === 'BUY' && t.net_inr <= 0).length,
+          allTrades.filter(t => t.side === 'SELL' && t.net_inr > 0).length,
+          allTrades.filter(t => t.side === 'SELL' && t.net_inr <= 0).length,
         ],
         backgroundColor: ['#22c55e', '#ef4444', '#818cf8', '#f97316'],
         borderWidth: 0, spacing: 2
@@ -416,7 +578,54 @@ function drawCharts(s, trades) {
         tooltip: { callbacks: { label: c => c.label + ': ' + c.parsed + ' trades' } }
       }
     }
-  }));
+  });
+}
+
+function renderPnlChart() {
+  const green = '#22c55e';
+  const red = '#ef4444';
+  const grid = 'rgba(255,255,255,0.04)';
+  const txt = 'rgba(255,255,255,0.35)';
+
+  const filtered = getFilteredPerTradeTrades();
+  const countEl = document.getElementById('pnlChartCount');
+  if (countEl) {
+    if (filtered.length) {
+      const sumInr = filtered.reduce((a, t) => a + t.net_inr, 0);
+      countEl.innerHTML = `${filtered.length} trade${filtered.length === 1 ? '' : 's'} · <span class="${cls(sumInr)}">${fmt(sumInr)}</span>`;
+    } else {
+      countEl.textContent = 'no trades';
+    }
+  }
+
+  if (charts.pnl) { charts.pnl.destroy(); charts.pnl = null; }
+  const canvas = document.getElementById('pnlChart');
+  if (!canvas) return;
+
+  charts.pnl = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: filtered.map((_, i) => String(i + 1)),
+      datasets: [{
+        data: filtered.map(t => Math.round(t.net_inr)),
+        backgroundColor: filtered.map(t => t.net_inr >= 0 ? green : red),
+        borderRadius: 2, barPercentage: 0.85
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: {
+          label: c => filtered[c.dataIndex].symbol + ' · ' + filtered[c.dataIndex].side + ': ₹' + c.parsed.y,
+          title: c => filtered[c[0].dataIndex].exit_time + ' (' + filtered[c[0].dataIndex].exit_date + ')'
+        }}
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: txt, font: { size: 10 }, maxTicksLimit: 12 } },
+        y: { grid: { color: grid }, ticks: { color: txt, font: { size: 10 }, callback: v => '₹' + v } }
+      }
+    }
+  });
 }
 
 async function manualRefresh() {
